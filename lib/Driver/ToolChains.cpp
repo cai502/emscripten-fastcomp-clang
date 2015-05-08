@@ -3638,3 +3638,10 @@ void XCore::AddCXXStdlibLibArgs(const ArgList &Args,
                                 ArgStringList &CmdArgs) const {
   // We don't output any lib args. This is handled by xcc.
 }
+
+ObjCRuntime EmscriptenToolChain::getDefaultObjCRuntime(bool isNonFragile) const {
+  //if (isTargetIOSBased())
+  //  return ObjCRuntime(ObjCRuntime::iOS, TargetVersion);
+  //if (isNonFragile)
+    return ObjCRuntime(ObjCRuntime::MacOSX, VersionTuple());
+}

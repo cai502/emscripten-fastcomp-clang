@@ -724,6 +724,7 @@ public:
       : ToolChain(D, Triple, Args) {}
   ~EmscriptenToolChain() override {}
 
+  ObjCRuntime getDefaultObjCRuntime(bool isNonFragile) const override;
   bool IsMathErrnoDefault() const override { return false; }
   bool IsObjCNonFragileABIDefault() const override { return true; }
   bool isPICDefault() const override { return false; }
