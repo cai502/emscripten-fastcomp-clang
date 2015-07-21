@@ -3690,5 +3690,5 @@ ObjCRuntime EmscriptenToolChain::getDefaultObjCRuntime(bool isNonFragile) const 
   //if (isTargetIOSBased())
   //  return ObjCRuntime(ObjCRuntime::iOS, TargetVersion);
   //if (isNonFragile)
-    return ObjCRuntime(ObjCRuntime::MacOSX, VersionTuple());
+  return ObjCRuntime(ObjCRuntime::iOS, VersionTuple(8));
 }
