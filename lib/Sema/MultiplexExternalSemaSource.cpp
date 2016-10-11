@@ -107,15 +107,11 @@ void MultiplexExternalSemaSource::completeVisibleDeclsMap(const DeclContext *DC)
     Sources[i]->completeVisibleDeclsMap(DC);
 }
 
-ExternalLoadResult MultiplexExternalSemaSource::
-FindExternalLexicalDecls(const DeclContext *DC,
-                         bool (*isKindWeWant)(Decl::Kind),
-                         SmallVectorImpl<Decl*> &Result) {
+void MultiplexExternalSemaSource::FindExternalLexicalDecls(
+    const DeclContext *DC, llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+    SmallVectorImpl<Decl *> &Result) {
   for(size_t i = 0; i < Sources.size(); ++i)
-    // FIXME: The semantics of the return result is unclear to me...
-    Sources[i]->FindExternalLexicalDecls(DC, isKindWeWant, Result);
-
-  return ELR_Success;
+    Sources[i]->FindExternalLexicalDecls(DC, IsKindWeWant, Result);
 }
 
 void MultiplexExternalSemaSource::FindFileRegionDecls(FileID File, 
@@ -201,6 +197,11 @@ void MultiplexExternalSemaSource::ReadMethodPool(Selector Sel) {
     Sources[i]->ReadMethodPool(Sel);
 }
 
+void MultiplexExternalSemaSource::updateOutOfDateSelector(Selector Sel) {
+  for(size_t i = 0; i < Sources.size(); ++i)
+    Sources[i]->updateOutOfDateSelector(Sel);
+}
+
 void MultiplexExternalSemaSource::ReadKnownNamespaces(
                                    SmallVectorImpl<NamespaceDecl*> &Namespaces){
   for(size_t i = 0; i < Sources.size(); ++i)
@@ -208,11 +209,19 @@ void MultiplexExternalSemaSource::ReadKnownNamespaces(
 }
 
 void MultiplexExternalSemaSource::ReadUndefinedButUsed(
-                         llvm::DenseMap<NamedDecl*, SourceLocation> &Undefined){
+    llvm::MapVector<NamedDecl *, SourceLocation> &Undefined) {
   for(size_t i = 0; i < Sources.size(); ++i)
     Sources[i]->ReadUndefinedButUsed(Undefined);
 }
-  
+
+void MultiplexExternalSemaSource::ReadMismatchingDeleteExpressions(
+    llvm::MapVector<FieldDecl *,
+                    llvm::SmallVector<std::pair<SourceLocation, bool>, 4>> &
+        Exprs) {
+  for (auto &Source : Sources)
+    Source->ReadMismatchingDeleteExpressions(Exprs);
+}
+
 bool MultiplexExternalSemaSource::LookupUnqualified(LookupResult &R, Scope *S){ 
   for(size_t i = 0; i < Sources.size(); ++i)
     Sources[i]->LookupUnqualified(R, S);

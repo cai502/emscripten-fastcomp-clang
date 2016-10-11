@@ -48,6 +48,18 @@ inline bool IsVariableAConstantExpression(VarDecl *Var, ASTContext &Context) {
     Var->getAnyInitializer(DefVD) && DefVD->checkInitIsICE(); 
 }
 
+// Helper function to check whether D's attributes match current CUDA mode.
+// Decls with mismatched attributes and related diagnostics may have to be
+// ignored during this CUDA compilation pass.
+inline bool DeclAttrsMatchCUDAMode(const LangOptions &LangOpts, Decl *D) {
+  if (!LangOpts.CUDA || !D)
+    return true;
+  bool isDeviceSideDecl = D->hasAttr<CUDADeviceAttr>() ||
+                          D->hasAttr<CUDASharedAttr>() ||
+                          D->hasAttr<CUDAGlobalAttr>();
+  return isDeviceSideDecl == LangOpts.CUDAIsDevice;
+}
+
 // Directly mark a variable odr-used. Given a choice, prefer to use 
 // MarkVariableReferenced since it does additional checks and then 
 // calls MarkVarDeclODRUsed.
@@ -61,10 +73,11 @@ inline void MarkVarDeclODRUsed(VarDecl *Var,
   // Keep track of used but undefined variables.
   // FIXME: We shouldn't suppress this warning for static data members.
   if (Var->hasDefinition(SemaRef.Context) == VarDecl::DeclarationOnly &&
-    !Var->isExternallyVisible() &&
-    !(Var->isStaticDataMember() && Var->hasInit())) {
-      SourceLocation &old = SemaRef.UndefinedButUsed[Var->getCanonicalDecl()];
-      if (old.isInvalid()) old = Loc;
+      (!Var->isExternallyVisible() || Var->isInline()) &&
+      !(Var->isStaticDataMember() && Var->hasInit())) {
+    SourceLocation &old = SemaRef.UndefinedButUsed[Var->getCanonicalDecl()];
+    if (old.isInvalid())
+      old = Loc;
   }
   QualType CaptureType, DeclRefType;
   SemaRef.tryCaptureVariable(Var, Loc, Sema::TryCapture_Implicit, 
@@ -204,6 +217,9 @@ public:
   bool isAddressOfOperand() const { return CorrectionValidator->IsAddressOfOperand; }
   const CXXScopeSpec *getSS() const { return SS.get(); }
   Scope *getScope() const { return S; }
+  CorrectionCandidateCallback *getCorrectionValidator() const {
+    return CorrectionValidator.get();
+  }
 
 private:
   class NamespaceSpecifierSet {

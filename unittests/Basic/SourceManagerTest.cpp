@@ -23,7 +23,6 @@
 #include "llvm/Config/llvm-config.h"
 #include "gtest/gtest.h"
 
-using namespace llvm;
 using namespace clang;
 
 namespace {
@@ -61,20 +60,20 @@ class VoidModuleLoader : public ModuleLoader {
 
   void makeModuleVisible(Module *Mod,
                          Module::NameVisibilityKind Visibility,
-                         SourceLocation ImportLoc,
-                         bool Complain) override { }
+                         SourceLocation ImportLoc) override { }
 
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
     { return nullptr; }
   bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
-    { return 0; };
+    { return 0; }
 };
 
 TEST_F(SourceManagerTest, isBeforeInTranslationUnit) {
   const char *source =
     "#define M(x) [x]\n"
     "M(foo)";
-  std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(source);
+  std::unique_ptr<llvm::MemoryBuffer> Buf =
+      llvm::MemoryBuffer::getMemBuffer(source);
   FileID mainFileID = SourceMgr.createFileID(std::move(Buf));
   SourceMgr.setMainFileID(mainFileID);
 
@@ -127,7 +126,8 @@ TEST_F(SourceManagerTest, getColumnNumber) {
     "int x;\n"
     "int y;";
 
-  std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Source);
+  std::unique_ptr<llvm::MemoryBuffer> Buf =
+      llvm::MemoryBuffer::getMemBuffer(Source);
   FileID MainFileID = SourceMgr.createFileID(std::move(Buf));
   SourceMgr.setMainFileID(MainFileID);
 
@@ -186,8 +186,10 @@ TEST_F(SourceManagerTest, getMacroArgExpandedLocation) {
     "#define CONCAT(X, Y) X##Y\n"
     "CONCAT(1,1)\n";
 
-  std::unique_ptr<MemoryBuffer> HeaderBuf = MemoryBuffer::getMemBuffer(header);
-  std::unique_ptr<MemoryBuffer> MainBuf = MemoryBuffer::getMemBuffer(main);
+  std::unique_ptr<llvm::MemoryBuffer> HeaderBuf =
+      llvm::MemoryBuffer::getMemBuffer(header);
+  std::unique_ptr<llvm::MemoryBuffer> MainBuf =
+      llvm::MemoryBuffer::getMemBuffer(main);
   FileID mainFileID = SourceMgr.createFileID(std::move(MainBuf));
   SourceMgr.setMainFileID(mainFileID);
 
@@ -264,7 +266,7 @@ public:
                                  MacroNameTok.getIdentifierInfo()->getName(),
                                  true));
   }
-  void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
+  void MacroExpands(const Token &MacroNameTok, const MacroDefinition &MD,
                     SourceRange Range, const MacroArgs *Args) override {
     Macros.push_back(MacroAction(MacroNameTok.getLocation(),
                                  MacroNameTok.getIdentifierInfo()->getName(),
@@ -285,8 +287,10 @@ TEST_F(SourceManagerTest, isBeforeInTranslationUnitWithMacroInInclude) {
     "#define INC2 </test-header.h>\n"
     "#include M(INC2)\n";
 
-  std::unique_ptr<MemoryBuffer> HeaderBuf = MemoryBuffer::getMemBuffer(header);
-  std::unique_ptr<MemoryBuffer> MainBuf = MemoryBuffer::getMemBuffer(main);
+  std::unique_ptr<llvm::MemoryBuffer> HeaderBuf =
+      llvm::MemoryBuffer::getMemBuffer(header);
+  std::unique_ptr<llvm::MemoryBuffer> MainBuf =
+      llvm::MemoryBuffer::getMemBuffer(main);
   SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(MainBuf)));
 
   const FileEntry *headerFile = FileMgr.getVirtualFile("/test-header.h",

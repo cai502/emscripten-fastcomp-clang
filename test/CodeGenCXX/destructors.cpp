@@ -4,6 +4,9 @@
 // RUN: FileCheck --check-prefix=CHECK3 --input-file=%t %s
 // RUN: FileCheck --check-prefix=CHECK4 --input-file=%t %s
 // RUN: FileCheck --check-prefix=CHECK5 --input-file=%t %s
+// RUN: %clang_cc1 %s -triple x86_64-apple-darwin10 -emit-llvm -o - -fcxx-exceptions -fexceptions -O1 -disable-llvm-optzns -std=c++11 > %t2
+// RUN: FileCheck --check-prefix=CHECK6 --input-file=%t2 %s
+// REQUIRES: asserts
 
 struct A {
   int a;
@@ -151,7 +154,7 @@ namespace test1 {
 
   struct S : A { ~S(); int x; };
   S::~S() {}
-  // CHECK4: @_ZN5test11SD2Ev = alias bitcast {{.*}} @_ZN5test11AD2Ev
+  // CHECK4: @_ZN5test11SD2Ev = alias {{.*}}, bitcast {{.*}} @_ZN5test11AD2Ev
 
   struct T : A { ~T(); B x; };
   T::~T() {} // CHECK4-LABEL: define void @_ZN5test11TD2Ev(%"struct.test1::T"* %this) unnamed_addr
@@ -191,10 +194,11 @@ namespace test3 {
   // CHECK4: ret void
 
   // CHECK4-LABEL: define internal void @_ZN5test312_GLOBAL__N_11DD0Ev(%"struct.test3::(anonymous namespace)::D"* %this) unnamed_addr
+  // CHECK4-SAME:  personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
   // CHECK4: invoke void {{.*}} @_ZN5test312_GLOBAL__N_11CD2Ev
   // CHECK4: call void @_ZdlPv({{.*}}) [[NUW:#[0-9]+]]
   // CHECK4: ret void
-  // CHECK4: landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  // CHECK4: landingpad { i8*, i32 }
   // CHECK4-NEXT: cleanup
   // CHECK4: call void @_ZdlPv({{.*}}) [[NUW]]
   // CHECK4: resume { i8*, i32 }
@@ -210,10 +214,11 @@ namespace test3 {
   // CHECK4: ret void
 
   // CHECK4-LABEL: define internal void @_ZN5test312_GLOBAL__N_11CD0Ev(%"struct.test3::(anonymous namespace)::C"* %this) unnamed_addr
+  // CHECK4-SAME:  personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
   // CHECK4: invoke void @_ZN5test312_GLOBAL__N_11CD2Ev(
   // CHECK4: call void @_ZdlPv({{.*}}) [[NUW]]
   // CHECK4: ret void
-  // CHECK4: landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  // CHECK4: landingpad { i8*, i32 }
   // CHECK4-NEXT: cleanup
   // CHECK4: call void @_ZdlPv({{.*}}) [[NUW]]
   // CHECK4: resume { i8*, i32 }
@@ -279,6 +284,8 @@ namespace test5 {
   // CHECK5:      [[ELEMS:%.*]] = alloca [5 x [[A:%.*]]], align
   // CHECK5-NEXT: [[EXN:%.*]] = alloca i8*
   // CHECK5-NEXT: [[SEL:%.*]] = alloca i32
+  // CHECK5-NEXT: [[PELEMS:%.*]] = bitcast [5 x [[A]]]* [[ELEMS]] to i8*
+  // CHECK5-NEXT: call void @llvm.lifetime.start(i64 5, i8* [[PELEMS]])
   // CHECK5-NEXT: [[BEGIN:%.*]] = getelementptr inbounds [5 x [[A]]], [5 x [[A]]]* [[ELEMS]], i32 0, i32 0
   // CHECK5-NEXT: [[END:%.*]] = getelementptr inbounds [[A]], [[A]]* [[BEGIN]], i64 5
   // CHECK5-NEXT: br label
@@ -287,7 +294,8 @@ namespace test5 {
   // CHECK5-NEXT: invoke void @_ZN5test51AD1Ev([[A]]* [[ELT]])
   // CHECK5:      [[T0:%.*]] = icmp eq [[A]]* [[ELT]], [[BEGIN]]
   // CHECK5-NEXT: br i1 [[T0]],
-  // CHECK5:      ret void
+  // CHECK5:      call void @llvm.lifetime.end
+  // CHECK5-NEXT: ret void
   // lpad
   // CHECK5:      [[EMPTY:%.*]] = icmp eq [[A]]* [[BEGIN]], [[ELT]]
   // CHECK5-NEXT: br i1 [[EMPTY]]
@@ -423,3 +431,64 @@ namespace test10 {
     return true;
   }
 }
+
+#if __cplusplus >= 201103L
+namespace test11 {
+
+// Check that lifetime.end is emitted in the landing pad.
+
+// CHECK6-LABEL: define void @_ZN6test1115testLifetimeEndEi(
+// CHECK6: entry:
+// CHECK6: [[T1:%[a-z0-9]+]] = alloca %"struct.test11::S1"
+// CHECK6: [[T2:%[a-z0-9]+]] = alloca %"struct.test11::S1"
+// CHECK6: [[T3:%[a-z0-9]+]] = alloca %"struct.test11::S1"
+
+// CHECK6: {{^}}invoke.cont
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T1]])
+// CHECK6: [[BC1:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T1]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC1]])
+// CHECK6: {{^}}lpad
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T1]])
+// CHECK6: [[BC2:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T1]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC2]])
+
+// CHECK6: {{^}}invoke.cont
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T2]])
+// CHECK6: [[BC3:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T2]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC3]])
+// CHECK6: {{^}}lpad
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T2]])
+// CHECK6: [[BC4:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T2]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC4]])
+
+// CHECK6: {{^}}invoke.cont
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T3]])
+// CHECK6: [[BC5:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T3]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC5]])
+// CHECK6: {{^}}lpad
+// CHECK6: call void @_ZN6test112S1D1Ev(%"struct.test11::S1"* [[T3]])
+// CHECK6: [[BC6:%[a-z0-9]+]] = bitcast %"struct.test11::S1"* [[T3]] to i8*
+// CHECK6: call void @llvm.lifetime.end(i64 32, i8* [[BC6]])
+
+  struct S1 {
+    ~S1();
+    int a[8];
+  };
+
+  void func1(S1 &) noexcept(false);
+
+  void testLifetimeEnd(int n) {
+    if (n < 10) {
+      S1 t1;
+      func1(t1);
+    } else if (n < 100) {
+      S1 t2;
+      func1(t2);
+    } else if (n < 1000) {
+      S1 t3;
+      func1(t3);
+    }
+  }
+
+}
+#endif

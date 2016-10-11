@@ -52,6 +52,7 @@ struct PrintingPolicy;
 class RecordDecl;
 class Stmt;
 class StoredDeclsMap;
+class TemplateDecl;
 class TranslationUnitDecl;
 class UsingDirectiveDecl;
 }
@@ -70,7 +71,11 @@ namespace clang {
 /// Decl - This represents one declaration (or definition), e.g. a variable,
 /// typedef, function, struct, etc.
 ///
-class Decl {
+/// Note: There are objects tacked on before the *beginning* of Decl
+/// (and its subclasses) in its Decl::operator new(). Proper alignment
+/// of all subclasses (not requiring more than the alignment of Decl) is
+/// asserted in DeclBase.cpp.
+class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) Decl {
 public:
   /// \brief Lists the kind of concrete classes of Decl.
   enum Kind {
@@ -106,6 +111,9 @@ public:
     /// Tags, declared with 'struct foo;' and referenced with
     /// 'struct foo'.  All tags are also types.  This is what
     /// elaborated-type-specifiers look for in C.
+    /// This also contains names that conflict with tags in the
+    /// same scope but that are otherwise ordinary names (non-type
+    /// template parameters and indirect field declarations).
     IDNS_Tag                 = 0x0002,
 
     /// Types, declared with 'struct foo', typedefs, etc.
@@ -124,7 +132,7 @@ public:
     IDNS_Namespace           = 0x0010,
 
     /// Ordinary names.  In C, everything that's not a label, tag,
-    /// or member ends up here.
+    /// member, or function-local extern ends up here.
     IDNS_Ordinary            = 0x0020,
 
     /// Objective C \@protocol.
@@ -153,8 +161,13 @@ public:
 
     /// This declaration is a function-local extern declaration of a
     /// variable or function. This may also be IDNS_Ordinary if it
-    /// has been declared outside any function.
-    IDNS_LocalExtern         = 0x0800
+    /// has been declared outside any function. These act mostly like
+    /// invisible friend declarations, but are also visible to unqualified
+    /// lookup within the scope of the declaring function.
+    IDNS_LocalExtern         = 0x0800,
+
+    /// This declaration is an OpenMP user defined reduction construction.
+    IDNS_OMPReduction        = 0x1000
   };
 
   /// ObjCDeclQualifier - 'Qualifiers' written next to the return and
@@ -178,7 +191,12 @@ public:
     OBJC_TQ_Out = 0x4,
     OBJC_TQ_Bycopy = 0x8,
     OBJC_TQ_Byref = 0x10,
-    OBJC_TQ_Oneway = 0x20
+    OBJC_TQ_Oneway = 0x20,
+
+    /// The nullability qualifier is set when the nullability of the
+    /// result or parameter was expressed via a context-sensitive
+    /// keyword.
+    OBJC_TQ_CSNullability = 0x40
   };
 
 protected:
@@ -239,7 +257,7 @@ private:
   SourceLocation Loc;
 
   /// DeclKind - This indicates which class this is.
-  unsigned DeclKind : 8;
+  unsigned DeclKind : 7;
 
   /// InvalidDecl - This indicates a semantic error occurred.
   unsigned InvalidDecl :  1;
@@ -279,7 +297,7 @@ protected:
   unsigned Hidden : 1;
   
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
-  unsigned IdentifierNamespace : 12;
+  unsigned IdentifierNamespace : 13;
 
   /// \brief If 0, we have not computed the linkage of this declaration.
   /// Otherwise, it is the linkage + 1.
@@ -317,7 +335,7 @@ protected:
     : NextInContextAndBits(), DeclCtx(DC),
       Loc(L), DeclKind(DK), InvalidDecl(0),
       HasAttrs(false), Implicit(false), Used(false), Referenced(false),
-      Access(AS_none), FromASTFile(0), Hidden(0),
+      Access(AS_none), FromASTFile(0), Hidden(DC && cast<Decl>(DC)->Hidden),
       IdentifierNamespace(getIdentifierNamespaceForKind(DK)),
       CacheValidAndLinkage(0)
   {
@@ -463,8 +481,7 @@ public:
 
   template <typename T>
   llvm::iterator_range<specific_attr_iterator<T>> specific_attrs() const {
-    return llvm::iterator_range<specific_attr_iterator<T>>(
-        specific_attr_begin<T>(), specific_attr_end<T>());
+    return llvm::make_range(specific_attr_begin<T>(), specific_attr_end<T>());
   }
 
   template <typename T>
@@ -498,8 +515,8 @@ public:
   bool isImplicit() const { return Implicit; }
   void setImplicit(bool I = true) { Implicit = I; }
 
-  /// \brief Whether this declaration was used, meaning that a definition
-  /// is required.
+  /// \brief Whether *any* (re-)declaration of the entity was used, meaning that
+  /// a definition is required.
   ///
   /// \param CheckUsedAttr When true, also consider the "used" attribute
   /// (in addition to the "used" bit set by \c setUsed()) when determining
@@ -509,7 +526,8 @@ public:
   /// \brief Set whether the declaration is used, in the sense of odr-use.
   ///
   /// This should only be used immediately after creating a declaration.
-  void setIsUsed() { Used = true; }
+  /// It intentionally doesn't notify any listeners.
+  void setIsUsed() { getCanonicalDecl()->Used = true; }
 
   /// \brief Mark the declaration used, in the sense of odr-use.
   ///
@@ -547,6 +565,13 @@ public:
   bool isModulePrivate() const {
     return NextInContextAndBits.getInt() & ModulePrivateFlag;
   }
+
+  /// Return true if this declaration has an attribute which acts as
+  /// definition of the entity, such as 'alias' or 'ifunc'.
+  bool hasDefiningAttr() const;
+
+  /// Return this declaration's defining attribute if it has one.
+  const Attr *getDefiningAttr() const;
 
 protected:
   /// \brief Specify whether this declaration was marked as being private
@@ -637,13 +662,30 @@ public:
 
 private:
   Module *getOwningModuleSlow() const;
+protected:
+  bool hasLocalOwningModuleStorage() const;
 
 public:
-  Module *getOwningModule() const {
+  /// \brief Get the imported owning module, if this decl is from an imported
+  /// (non-local) module.
+  Module *getImportedOwningModule() const {
     if (!isFromASTFile())
       return nullptr;
 
     return getOwningModuleSlow();
+  }
+
+  /// \brief Get the local owning module, if known. Returns nullptr if owner is
+  /// not yet known or declaration is not from a module.
+  Module *getLocalOwningModule() const {
+    if (isFromASTFile() || !Hidden)
+      return nullptr;
+    return reinterpret_cast<Module *const *>(this)[-1];
+  }
+  void setLocalOwningModule(Module *M) {
+    assert(!isFromASTFile() && Hidden && hasLocalOwningModuleStorage() &&
+           "should not have a cached owning module");
+    reinterpret_cast<Module **>(this)[-1] = M;
   }
 
   unsigned getIdentifierNamespace() const {
@@ -698,6 +740,15 @@ public:
   bool isDefinedOutsideFunctionOrMethod() const {
     return getParentFunctionOrMethod() == nullptr;
   }
+
+  /// \brief Returns true if this declaration lexically is inside a function.
+  /// It recognizes non-defining declarations as well as members of local
+  /// classes:
+  /// \code
+  ///     void foo() { void bar(); }
+  ///     void foo2() { class ABC { void bar(); }; }
+  /// \endcode
+  bool isLexicallyWithinFunctionOrMethod() const;
 
   /// \brief If this decl is defined inside a function/method/block it returns
   /// the corresponding DeclContext, otherwise it returns null.
@@ -852,6 +903,10 @@ public:
             DeclKind <= Decl::lastFunction) ||
            DeclKind == FunctionTemplate;
   }
+
+  /// \brief If this is a declaration that describes some template, this
+  /// method returns that template declaration.
+  TemplateDecl *getDescribedTemplate() const;
 
   /// \brief Returns the function itself, or the templated function if this is a
   /// function template.
@@ -1075,6 +1130,7 @@ public:
 ///   ObjCContainerDecl
 ///   LinkageSpecDecl
 ///   BlockDecl
+///   OMPDeclareReductionDecl
 ///
 class DeclContext {
   /// DeclKind - This indicates which class this is.
@@ -1103,6 +1159,11 @@ class DeclContext {
   /// \brief If \c true, the external source may have lexical declarations
   /// that are missing from the lookup table.
   mutable bool HasLazyExternalLexicalLookups : 1;
+
+  /// \brief If \c true, lookups should only return identifier from
+  /// DeclContext scope (for example TranslationUnit). Used in
+  /// LookupQualifiedName()
+  mutable bool UseQualifiedLookup : 1;
 
   /// \brief Pointer to the data structure used to lookup declarations
   /// within this context (or a DependentStoredDeclsMap if this is a
@@ -1138,6 +1199,7 @@ protected:
         ExternalVisibleStorage(false),
         NeedToReconcileExternalVisibleStorage(false),
         HasLazyLocalLexicalLookups(false), HasLazyExternalLexicalLookups(false),
+        UseQualifiedLookup(false),
         LookupPtr(nullptr), FirstDecl(nullptr), LastDecl(nullptr) {}
 
 public:
@@ -1716,6 +1778,16 @@ public:
   bool isDeclInLexicalTraversal(const Decl *D) const {
     return D && (D->NextInContextAndBits.getPointer() || D == FirstDecl || 
                  D == LastDecl);
+  }
+
+  bool setUseQualifiedLookup(bool use = true) {
+    bool old_value = UseQualifiedLookup;
+    UseQualifiedLookup = use;
+    return old_value;
+  }
+
+  bool shouldUseQualifiedLookup() const {
+    return UseQualifiedLookup;
   }
 
   static bool classof(const Decl *D);

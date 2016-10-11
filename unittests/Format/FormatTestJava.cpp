@@ -25,15 +25,15 @@ protected:
     DEBUG(llvm::errs() << Code << "\n\n");
     std::vector<tooling::Range> Ranges(1, tooling::Range(Offset, Length));
     tooling::Replacements Replaces = reformat(Style, Code, Ranges);
-    std::string Result = applyAllReplacements(Code, Replaces);
-    EXPECT_NE("", Result);
-    DEBUG(llvm::errs() << "\n" << Result << "\n\n");
-    return Result;
+    auto Result = applyAllReplacements(Code, Replaces);
+    EXPECT_TRUE(static_cast<bool>(Result));
+    DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
+    return *Result;
   }
 
-  static std::string format(
-      llvm::StringRef Code,
-      const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
+  static std::string
+  format(llvm::StringRef Code,
+         const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
     return format(Code, 0, Code.size(), Style);
   }
 
@@ -67,6 +67,8 @@ TEST_F(FormatTestJava, FormatsInstanceOfLikeOperators) {
   verifyFormat("return aaaaaaaaaaaaaaaaaaaaaaaaaaaaa instanceof\n"
                "    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;",
                Style);
+  verifyFormat("return aaaaaaaaaaaaaaaaaaa instanceof bbbbbbbbbbbbbbbbbbbbbbb\n"
+               "    && ccccccccccccccccccc instanceof dddddddddddddddddddddd;");
 }
 
 TEST_F(FormatTestJava, Chromium) {
@@ -274,6 +276,10 @@ TEST_F(FormatTestJava, Annotations) {
   verifyFormat("void SomeFunction(@org.llvm.Nullable String something) {}");
 
   verifyFormat("@Partial @Mock DataLoader loader;");
+  verifyFormat("@Partial\n"
+               "@Mock\n"
+               "DataLoader loader;",
+               getChromiumStyle(FormatStyle::LK_Java));
   verifyFormat("@SuppressWarnings(value = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")\n"
                "public static int iiiiiiiiiiiiiiiiiiiiiiii;");
 
@@ -306,6 +312,9 @@ TEST_F(FormatTestJava, Annotations) {
                "      String bbbbbbbbbbbbbbb) {}\n"
                "}",
                getStyleWithColumns(60));
+  verifyFormat("@Annotation(\"Some\"\n"
+               "    + \" text\")\n"
+               "List<Integer> list;");
 }
 
 TEST_F(FormatTestJava, Generics) {
@@ -391,6 +400,10 @@ TEST_F(FormatTestJava, SynchronizedKeyword) {
                "}");
 }
 
+TEST_F(FormatTestJava, AssertKeyword) {
+  verifyFormat("assert a && b;");
+}
+
 TEST_F(FormatTestJava, PackageDeclarations) {
   verifyFormat("package some.really.loooooooooooooooooooooong.package;",
                getStyleWithColumns(50));
@@ -416,6 +429,7 @@ TEST_F(FormatTestJava, CppKeywords) {
   verifyFormat("public void union(Type a, Type b);");
   verifyFormat("public void struct(Object o);");
   verifyFormat("public void delete(Object o);");
+  verifyFormat("return operator && (aa);");
 }
 
 TEST_F(FormatTestJava, NeverAlignAfterReturn) {

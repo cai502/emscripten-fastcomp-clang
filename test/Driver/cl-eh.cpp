@@ -1,6 +1,3 @@
-// Don't attempt slash switches on msys bash.
-// REQUIRES: shell-preserves-root
-
 // Note: %s must be preceded by --, otherwise it may be interpreted as a
 // command-line option, e.g. on Mac where %s is commonly under /Users.
 
@@ -23,6 +20,11 @@
 // RUN: %clang_cl /c /EHs- /EHsa -### -- %s 2>&1 | FileCheck -check-prefix=EHs_EHa %s
 // EHs_EHa: "-fcxx-exceptions"
 // EHs_EHa: "-fexceptions"
+
+// RUN: %clang_cl /c /EHa /EHc -### -- %s 2>&1 | FileCheck -check-prefix=EHa_EHc %s
+// EHa_EHc: "-fcxx-exceptions"
+// EHa_EHc: "-fexceptions"
+// EHa_EHc-NOT: "-fexternc-nounwind"
 
 // RUN: %clang_cl /c /EHinvalid -### -- %s 2>&1 | FileCheck -check-prefix=EHinvalid %s
 // EHinvalid: error: invalid value 'invalid' in '/EH'

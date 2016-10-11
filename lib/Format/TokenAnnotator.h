@@ -59,7 +59,7 @@ public:
       I->Tok->Previous = Current;
       Current = Current->Next;
       Current->Children.clear();
-      for (const auto& Child : Node.Children) {
+      for (const auto &Child : Node.Children) {
         Children.push_back(new AnnotatedLine(Child));
         Current->Children.push_back(Children.back());
       }
@@ -78,6 +78,29 @@ public:
       Current->Role.reset();
       Current = Current->Next;
     }
+  }
+
+  /// \c true if this line starts with the given tokens in order, ignoring
+  /// comments.
+  template <typename... Ts> bool startsWith(Ts... Tokens) const {
+    return First && First->startsSequence(Tokens...);
+  }
+
+  /// \c true if this line ends with the given tokens in reversed order,
+  /// ignoring comments.
+  /// For example, given tokens [T1, T2, T3, ...], the function returns true if
+  /// this line is like "... T3 T2 T1".
+  template <typename... Ts> bool endsWith(Ts... Tokens) const {
+    return Last && Last->endsSequence(Tokens...);
+  }
+
+  /// \c true if this line looks like a function definition instead of a
+  /// function declaration. Asserts MightBeFunctionDecl.
+  bool mightBeFunctionDefinition() const {
+    assert(MightBeFunctionDecl);
+    // FIXME: Line.Last points to other characters than tok::semi
+    // and tok::lbrace.
+    return !Last->isOneOf(tok::semi, tok::comment);
   }
 
   FormatToken *First;
@@ -137,6 +160,8 @@ private:
   bool mustBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
 
   bool canBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
+
+  bool mustBreakForReturnType(const AnnotatedLine &Line) const;
 
   void printDebugInfo(const AnnotatedLine &Line);
 

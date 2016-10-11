@@ -18,6 +18,7 @@
 #include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -172,6 +173,7 @@ private:
   bool WarningsAsErrors;         // Treat warnings like errors.
   bool EnableAllWarnings;        // Enable all warnings.
   bool ErrorsAsFatal;            // Treat errors like fatal errors.
+  bool FatalsAsError;             // Treat fatal errors like errors.
   bool SuppressSystemWarnings;   // Suppress warnings in system headers.
   bool SuppressAllDiagnostics;   // Suppress all diagnostics.
   bool ElideType;                // Elide common types of templates.
@@ -453,6 +455,12 @@ public:
   /// \brief When set to true, any error reported is made a fatal error.
   void setErrorsAsFatal(bool Val) { ErrorsAsFatal = Val; }
   bool getErrorsAsFatal() const { return ErrorsAsFatal; }
+
+  /// \brief When set to true, any fatal error reported is made an error.
+  ///
+  /// This setting takes precedence over the setErrorsAsFatal setting above.
+  void setFatalsAsError(bool Val) { FatalsAsError = Val; }
+  bool getFatalsAsError() const { return FatalsAsError; }
 
   /// \brief When set to true mask warnings that come from system headers.
   void setSuppressSystemWarnings(bool Val) { SuppressSystemWarnings = Val; }
@@ -863,28 +871,27 @@ public:
 /// the common fields to registers, eliminating increments of the NumArgs field,
 /// for example.
 class DiagnosticBuilder {
-  mutable DiagnosticsEngine *DiagObj;
-  mutable unsigned NumArgs;
+  mutable DiagnosticsEngine *DiagObj = nullptr;
+  mutable unsigned NumArgs = 0;
 
   /// \brief Status variable indicating if this diagnostic is still active.
   ///
   // NOTE: This field is redundant with DiagObj (IsActive iff (DiagObj == 0)),
   // but LLVM is not currently smart enough to eliminate the null check that
   // Emit() would end up with if we used that as our status variable.
-  mutable bool IsActive;
+  mutable bool IsActive = false;
 
   /// \brief Flag indicating that this diagnostic is being emitted via a
   /// call to ForceEmit.
-  mutable bool IsForceEmit;
+  mutable bool IsForceEmit = false;
 
   void operator=(const DiagnosticBuilder &) = delete;
   friend class DiagnosticsEngine;
 
-  DiagnosticBuilder()
-      : DiagObj(nullptr), NumArgs(0), IsActive(false), IsForceEmit(false) {}
+  DiagnosticBuilder() = default;
 
   explicit DiagnosticBuilder(DiagnosticsEngine *diagObj)
-      : DiagObj(diagObj), NumArgs(0), IsActive(true), IsForceEmit(false) {
+      : DiagObj(diagObj), IsActive(true) {
     assert(diagObj && "DiagnosticBuilder requires a valid DiagnosticsEngine!");
     diagObj->DiagRanges.clear();
     diagObj->DiagFixItHints.clear();
@@ -1065,10 +1072,10 @@ inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
 // so that we only match those arguments that are (statically) DeclContexts;
 // other arguments that derive from DeclContext (e.g., RecordDecls) will not
 // match.
-template<typename T>
-inline
-typename std::enable_if<std::is_same<T, DeclContext>::value,
-                        const DiagnosticBuilder &>::type
+template <typename T>
+inline typename std::enable_if<
+    std::is_same<typename std::remove_const<T>::type, DeclContext>::value,
+    const DiagnosticBuilder &>::type
 operator<<(const DiagnosticBuilder &DB, T *DC) {
   DB.AddTaggedVal(reinterpret_cast<intptr_t>(DC),
                   DiagnosticsEngine::ak_declcontext);
@@ -1076,14 +1083,14 @@ operator<<(const DiagnosticBuilder &DB, T *DC) {
 }
 
 inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
-                                           const SourceRange &R) {
+                                           SourceRange R) {
   DB.AddSourceRange(CharSourceRange::getTokenRange(R));
   return DB;
 }
 
 inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
                                            ArrayRef<SourceRange> Ranges) {
-  for (const SourceRange &R: Ranges)
+  for (SourceRange R : Ranges)
     DB.AddSourceRange(CharSourceRange::getTokenRange(R));
   return DB;
 }
@@ -1106,6 +1113,13 @@ inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
     DB.AddFixItHint(Hint);
   return DB;
 }
+
+/// A nullability kind paired with a bit indicating whether it used a
+/// context-sensitive keyword.
+typedef std::pair<NullabilityKind, bool> DiagNullabilityKind;
+
+const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
+                                    DiagNullabilityKind nullability);
 
 inline DiagnosticBuilder DiagnosticsEngine::Report(SourceLocation Loc,
                                                    unsigned DiagID) {
@@ -1256,7 +1270,7 @@ class StoredDiagnostic {
   std::vector<FixItHint> FixIts;
 
 public:
-  StoredDiagnostic();
+  StoredDiagnostic() = default;
   StoredDiagnostic(DiagnosticsEngine::Level Level, const Diagnostic &Info);
   StoredDiagnostic(DiagnosticsEngine::Level Level, unsigned ID, 
                    StringRef Message);
@@ -1264,7 +1278,6 @@ public:
                    StringRef Message, FullSourceLoc Loc,
                    ArrayRef<CharSourceRange> Ranges,
                    ArrayRef<FixItHint> Fixits);
-  ~StoredDiagnostic();
 
   /// \brief Evaluates true when this object stores a diagnostic.
   explicit operator bool() const { return Message.size() > 0; }

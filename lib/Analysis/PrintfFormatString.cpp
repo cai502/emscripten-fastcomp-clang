@@ -49,6 +49,24 @@ static bool ParsePrecision(FormatStringHandler &H, PrintfSpecifier &FS,
   return false;
 }
 
+static bool ParseObjCFlags(FormatStringHandler &H, PrintfSpecifier &FS,
+                           const char *FlagBeg, const char *E, bool Warn) {
+   StringRef Flag(FlagBeg, E - FlagBeg);
+   // Currently there is only one flag.
+   if (Flag == "tt") {
+     FS.setHasObjCTechnicalTerm(FlagBeg);
+     return false;
+   }
+   // Handle either the case of no flag or an invalid flag.
+   if (Warn) {
+     if (Flag == "")
+       H.HandleEmptyObjCModifierFlag(FlagBeg, E  - FlagBeg);
+     else
+       H.HandleInvalidObjCModifierFlag(FlagBeg, E  - FlagBeg);
+   }
+   return true;
+}
+
 static PrintfSpecifierResult ParsePrintfSpecifier(FormatStringHandler &H,
                                                   const char *&Beg,
                                                   const char *E,
@@ -168,6 +186,38 @@ static PrintfSpecifierResult ParsePrintfSpecifier(FormatStringHandler &H,
     return true;
   }
 
+  // Look for the Objective-C modifier flags, if any.
+  // We parse these here, even if they don't apply to
+  // the conversion specifier, and then emit an error
+  // later if the conversion specifier isn't '@'.  This
+  // enables better recovery, and we don't know if
+  // these flags are applicable until later.
+  const char *ObjCModifierFlagsStart = nullptr,
+             *ObjCModifierFlagsEnd = nullptr;
+  if (*I == '[') {
+    ObjCModifierFlagsStart = I;
+    ++I;
+    auto flagStart = I;
+    for (;; ++I) {
+      ObjCModifierFlagsEnd = I;
+      if (I == E) {
+        if (Warn)
+          H.HandleIncompleteSpecifier(Start, E - Start);
+        return true;
+      }
+      // Did we find the closing ']'?
+      if (*I == ']') {
+        if (ParseObjCFlags(H, FS, flagStart, I, Warn))
+          return true;
+        ++I;
+        break;
+      }
+      // There are no separators defined yet for multiple
+      // Objective-C modifier flags.  When those are
+      // defined, this is the place to check.
+    }
+  }
+
   if (*I == '\0') {
     // Detect spurious null characters, which are likely errors.
     H.HandleNullChar(I);
@@ -240,6 +290,18 @@ static PrintfSpecifierResult ParsePrintfSpecifier(FormatStringHandler &H,
       if (Target.getTriple().isOSMSVCRT())
         k = ConversionSpecifier::ZArg;
   }
+  
+  // Check to see if we used the Objective-C modifier flags with
+  // a conversion specifier other than '@'.
+  if (k != ConversionSpecifier::ObjCObjArg &&
+      k != ConversionSpecifier::InvalidSpecifier &&
+      ObjCModifierFlagsStart) {
+    H.HandleObjCFlagsWithNonObjCConversion(ObjCModifierFlagsStart,
+                                           ObjCModifierFlagsEnd + 1,
+                                           conversionPosition);
+    return true;
+  }
+  
   PrintfConversionSpecifier CS(conversionPosition, k);
   FS.setConversionSpecifier(CS);
   if (CS.consumesDataArgument() && !FS.usesPositionalArg())
@@ -250,8 +312,13 @@ static PrintfSpecifierResult ParsePrintfSpecifier(FormatStringHandler &H,
     argIndex++;
 
   if (k == ConversionSpecifier::InvalidSpecifier) {
+    unsigned Len = I - Start;
+    if (ParseUTF8InvalidSpecifier(Start, E, Len)) {
+      CS.setEndScanList(Start + Len);
+      FS.setConversionSpecifier(CS);
+    }
     // Assume the conversion takes one argument.
-    return !H.HandleInvalidPrintfConversionSpecifier(FS, Start, I - Start);
+    return !H.HandleInvalidPrintfConversionSpecifier(FS, Start, Len);
   }
   return PrintfSpecifierResult(Start, FS);
 }
@@ -549,9 +616,13 @@ bool PrintfSpecifier::fixType(QualType QT, const LangOptions &LangOpt,
   case BuiltinType::UInt128:
   case BuiltinType::Int128:
   case BuiltinType::Half:
+  case BuiltinType::Float128:
     // Various types which are non-trivial to correct.
     return false;
 
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+  case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
 #define SIGNED_TYPE(Id, SingletonId)
 #define UNSIGNED_TYPE(Id, SingletonId)
 #define FLOATING_TYPE(Id, SingletonId)

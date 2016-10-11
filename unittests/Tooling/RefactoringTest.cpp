@@ -18,6 +18,7 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Format/Format.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
@@ -166,6 +167,39 @@ TEST_F(ReplacementTest, ApplyAllFailsIfOneApplyFails) {
   EXPECT_EQ("z", Context.getRewrittenText(IDz));
 }
 
+TEST_F(ReplacementTest, MultipleFilesReplaceAndFormat) {
+  // Column limit is 20.
+  std::string Code1 = "Long *a =\n"
+                      "    new Long();\n"
+                      "long x = 1;";
+  std::string Expected1 = "auto a = new Long();\n"
+                          "long x =\n"
+                          "    12345678901;";
+  std::string Code2 = "int x = 123;\n"
+                      "int y = 0;";
+  std::string Expected2 = "int x =\n"
+                          "    1234567890123;\n"
+                          "int y = 10;";
+  FileID ID1 = Context.createInMemoryFile("format_1.cpp", Code1);
+  FileID ID2 = Context.createInMemoryFile("format_2.cpp", Code2);
+
+  tooling::Replacements Replaces;
+  // Scrambled the order of replacements.
+  Replaces.insert(tooling::Replacement(
+      Context.Sources, Context.getLocation(ID2, 1, 12), 0, "4567890123"));
+  Replaces.insert(tooling::Replacement(
+      Context.Sources, Context.getLocation(ID1, 1, 1), 6, "auto "));
+  Replaces.insert(tooling::Replacement(
+      Context.Sources, Context.getLocation(ID2, 2, 9), 1, "10"));
+  Replaces.insert(tooling::Replacement(
+      Context.Sources, Context.getLocation(ID1, 3, 10), 1, "12345678901"));
+
+  EXPECT_TRUE(formatAndApplyAllReplacements(
+      Replaces, Context.Rewrite, "{BasedOnStyle: LLVM, ColumnLimit: 20}"));
+  EXPECT_EQ(Expected1, Context.getRewrittenText(ID1));
+  EXPECT_EQ(Expected2, Context.getRewrittenText(ID2));
+}
+
 TEST(ShiftedCodePositionTest, FindsNewCodePosition) {
   Replacements Replaces;
   Replaces.insert(Replacement("", 0, 1, ""));
@@ -176,8 +210,8 @@ TEST(ShiftedCodePositionTest, FindsNewCodePosition) {
   EXPECT_EQ(1u, shiftedCodePosition(Replaces, 2)); //  i|t   i;
   EXPECT_EQ(2u, shiftedCodePosition(Replaces, 3)); //  in|   i;
   EXPECT_EQ(3u, shiftedCodePosition(Replaces, 4)); //  int|  i;
-  EXPECT_EQ(4u, shiftedCodePosition(Replaces, 5)); //  int | i;
-  EXPECT_EQ(4u, shiftedCodePosition(Replaces, 6)); //  int  |i;
+  EXPECT_EQ(3u, shiftedCodePosition(Replaces, 5)); //  int | i;
+  EXPECT_EQ(3u, shiftedCodePosition(Replaces, 6)); //  int  |i;
   EXPECT_EQ(4u, shiftedCodePosition(Replaces, 7)); //  int   |;
   EXPECT_EQ(5u, shiftedCodePosition(Replaces, 8)); //  int   i|
 }
@@ -195,8 +229,8 @@ TEST(ShiftedCodePositionTest, VectorFindsNewCodePositionWithInserts) {
   EXPECT_EQ(1u, shiftedCodePosition(Replaces, 2)); //  i|t   i;
   EXPECT_EQ(2u, shiftedCodePosition(Replaces, 3)); //  in|   i;
   EXPECT_EQ(3u, shiftedCodePosition(Replaces, 4)); //  int|  i;
-  EXPECT_EQ(4u, shiftedCodePosition(Replaces, 5)); //  int | i;
-  EXPECT_EQ(4u, shiftedCodePosition(Replaces, 6)); //  int  |i;
+  EXPECT_EQ(3u, shiftedCodePosition(Replaces, 5)); //  int | i;
+  EXPECT_EQ(3u, shiftedCodePosition(Replaces, 6)); //  int  |i;
   EXPECT_EQ(4u, shiftedCodePosition(Replaces, 7)); //  int   |;
   EXPECT_EQ(5u, shiftedCodePosition(Replaces, 8)); //  int   i|
 }
@@ -205,8 +239,17 @@ TEST(ShiftedCodePositionTest, FindsNewCodePositionWithInserts) {
   Replacements Replaces;
   Replaces.insert(Replacement("", 4, 0, "\"\n\""));
   // Assume '"12345678"' is turned into '"1234"\n"5678"'.
-  EXPECT_EQ(4u, shiftedCodePosition(Replaces, 4)); // "123|5678"
-  EXPECT_EQ(8u, shiftedCodePosition(Replaces, 5)); // "1234|678"
+  EXPECT_EQ(3u, shiftedCodePosition(Replaces, 3)); // "123|5678"
+  EXPECT_EQ(7u, shiftedCodePosition(Replaces, 4)); // "1234|678"
+  EXPECT_EQ(8u, shiftedCodePosition(Replaces, 5)); // "12345|78"
+}
+
+TEST(ShiftedCodePositionTest, FindsNewCodePositionInReplacedText) {
+  Replacements Replaces;
+  // Replace the first four characters with "abcd".
+  Replaces.insert(Replacement("", 0, 4, "abcd"));
+  for (unsigned i = 0; i < 3; ++i)
+    EXPECT_EQ(i, shiftedCodePosition(Replaces, i));
 }
 
 class FlushRewrittenFilesTest : public ::testing::Test {
@@ -281,6 +324,7 @@ public:
 
 protected:
   clang::SourceManager *SM;
+  clang::ASTContext *Context;
 
 private:
   class FindConsumer : public clang::ASTConsumer {
@@ -303,6 +347,7 @@ private:
     CreateASTConsumer(clang::CompilerInstance &compiler,
                       llvm::StringRef dummy) override {
       Visitor->SM = &compiler.getSourceManager();
+      Visitor->Context = &compiler.getASTContext();
       /// TestConsumer will be deleted by the framework calling us.
       return llvm::make_unique<FindConsumer>(Visitor);
     }
@@ -368,6 +413,29 @@ TEST(Replacement, TemplatedFunctionCall) {
   expectReplacementAt(CallToF.Replace, "input.cc", 43, 8);
 }
 
+class NestedNameSpecifierAVisitor
+    : public TestVisitor<NestedNameSpecifierAVisitor> {
+public:
+  bool TraverseNestedNameSpecifierLoc(NestedNameSpecifierLoc NNSLoc) {
+    if (NNSLoc.getNestedNameSpecifier()) {
+      if (const NamespaceDecl* NS = NNSLoc.getNestedNameSpecifier()->getAsNamespace()) {
+        if (NS->getName() == "a") {
+          Replace = Replacement(*SM, &NNSLoc, "", Context->getLangOpts());
+        }
+      }
+    }
+    return TestVisitor<NestedNameSpecifierAVisitor>::TraverseNestedNameSpecifierLoc(
+        NNSLoc);
+  }
+  Replacement Replace;
+};
+
+TEST(Replacement, ColonColon) {
+  NestedNameSpecifierAVisitor VisitNNSA;
+  EXPECT_TRUE(VisitNNSA.runOver("namespace a { void f() { ::a::f(); } }"));
+  expectReplacementAt(VisitNNSA.Replace, "input.cc", 25, 5);
+}
+
 TEST(Range, overlaps) {
   EXPECT_TRUE(Range(10, 10).overlapsWith(Range(0, 11)));
   EXPECT_TRUE(Range(0, 11).overlapsWith(Range(10, 10)));
@@ -382,6 +450,108 @@ TEST(Range, contains) {
   EXPECT_TRUE(Range(0, 10).contains(Range(2, 6)));
   EXPECT_FALSE(Range(2, 6).contains(Range(0, 10)));
   EXPECT_FALSE(Range(0, 10).contains(Range(0, 11)));
+}
+
+TEST(Range, CalculateRangesOfReplacements) {
+  // Before: aaaabbbbbbz
+  // After : bbbbbbzzzzzzoooooooooooooooo
+  Replacements Replaces;
+  Replaces.insert(Replacement("foo", 0, 4, ""));
+  Replaces.insert(Replacement("foo", 10, 1, "zzzzzz"));
+  Replaces.insert(Replacement("foo", 11, 0, "oooooooooooooooo"));
+
+  std::vector<Range> Ranges = calculateChangedRanges(Replaces);
+
+  EXPECT_EQ(2ul, Ranges.size());
+  EXPECT_TRUE(Ranges[0].getOffset() == 0);
+  EXPECT_TRUE(Ranges[0].getLength() == 0);
+  EXPECT_TRUE(Ranges[1].getOffset() == 6);
+  EXPECT_TRUE(Ranges[1].getLength() == 22);
+}
+
+TEST(Range, RangesAfterReplacements) {
+  std::vector<Range> Ranges = {Range(5, 2), Range(10, 5)};
+  Replacements Replaces = {Replacement("foo", 0, 2, "1234")};
+  std::vector<Range> Expected = {Range(0, 4), Range(7, 2), Range(12, 5)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, RangesBeforeReplacements) {
+  std::vector<Range> Ranges = {Range(5, 2), Range(10, 5)};
+  Replacements Replaces = {Replacement("foo", 20, 2, "1234")};
+  std::vector<Range> Expected = {Range(5, 2), Range(10, 5), Range(20, 4)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, NotAffectedByReplacements) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 2), Range(10, 5)};
+  Replacements Replaces = {Replacement("foo", 3, 2, "12"),
+                           Replacement("foo", 12, 2, "12"),
+                           Replacement("foo", 20, 5, "")};
+  std::vector<Range> Expected = {Range(0, 2), Range(3, 4), Range(10, 5),
+                                 Range(20, 0)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, RangesWithNonOverlappingReplacements) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 2), Range(10, 5)};
+  Replacements Replaces = {Replacement("foo", 3, 1, ""),
+                           Replacement("foo", 6, 1, "123"),
+                           Replacement("foo", 20, 2, "12345")};
+  std::vector<Range> Expected = {Range(0, 2), Range(3, 0), Range(4, 4),
+                                 Range(11, 5), Range(21, 5)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, RangesWithOverlappingReplacements) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 2), Range(15, 5),
+                               Range(30, 5)};
+  Replacements Replaces = {
+      Replacement("foo", 1, 3, ""), Replacement("foo", 6, 1, "123"),
+      Replacement("foo", 13, 3, "1"), Replacement("foo", 25, 15, "")};
+  std::vector<Range> Expected = {Range(0, 1), Range(2, 4), Range(12, 5),
+                                 Range(22, 0)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, MergeIntoOneRange) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 2), Range(15, 5)};
+  Replacements Replaces = {Replacement("foo", 1, 15, "1234567890")};
+  std::vector<Range> Expected = {Range(0, 15)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, ReplacementsStartingAtRangeOffsets) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 5), Range(15, 5)};
+  Replacements Replaces = {
+      Replacement("foo", 0, 2, "12"), Replacement("foo", 5, 1, "123"),
+      Replacement("foo", 7, 4, "12345"), Replacement("foo", 15, 10, "12")};
+  std::vector<Range> Expected = {Range(0, 2), Range(5, 9), Range(18, 2)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, ReplacementsEndingAtRangeEnds) {
+  std::vector<Range> Ranges = {Range(0, 2), Range(5, 2), Range(15, 5)};
+  Replacements Replaces = {Replacement("foo", 6, 1, "123"),
+                           Replacement("foo", 17, 3, "12")};
+  std::vector<Range> Expected = {Range(0, 2), Range(5, 4), Range(17, 4)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, AjacentReplacements) {
+  std::vector<Range> Ranges = {Range(0, 0), Range(15, 5)};
+  Replacements Replaces = {Replacement("foo", 1, 2, "123"),
+                           Replacement("foo", 12, 3, "1234")};
+  std::vector<Range> Expected = {Range(0, 0), Range(1, 3), Range(13, 9)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
+}
+
+TEST(Range, MergeRangesAfterReplacements) {
+  std::vector<Range> Ranges = {Range(8, 0), Range(5, 2), Range(9, 0), Range(0, 1)};
+  Replacements Replaces = {Replacement("foo", 1, 3, ""),
+                           Replacement("foo", 7, 0, "12"), Replacement("foo", 9, 2, "")};
+  std::vector<Range> Expected = {Range(0, 1), Range(2, 4), Range(7, 0), Range(8, 0)};
+  EXPECT_EQ(Expected, calculateRangesAfterReplacements(Replaces, Ranges));
 }
 
 TEST(DeduplicateTest, removesDuplicates) {
@@ -462,6 +632,104 @@ TEST(DeduplicateTest, detectsConflicts) {
     ASSERT_EQ(6u, Conflicts[1].getOffset());
     ASSERT_EQ(2u, Conflicts[1].getLength());
   }
+}
+
+class MergeReplacementsTest : public ::testing::Test {
+protected:
+  void mergeAndTestRewrite(StringRef Code, StringRef Intermediate,
+                           StringRef Result, const Replacements &First,
+                           const Replacements &Second) {
+    // These are mainly to verify the test itself and make it easier to read.
+    auto AfterFirst = applyAllReplacements(Code, First);
+    EXPECT_TRUE(static_cast<bool>(AfterFirst));
+    auto InSequenceRewrite = applyAllReplacements(*AfterFirst, Second);
+    EXPECT_TRUE(static_cast<bool>(InSequenceRewrite));
+    EXPECT_EQ(Intermediate, *AfterFirst);
+    EXPECT_EQ(Result, *InSequenceRewrite);
+
+    tooling::Replacements Merged = mergeReplacements(First, Second);
+    auto MergedRewrite = applyAllReplacements(Code, Merged);
+    EXPECT_TRUE(static_cast<bool>(MergedRewrite));
+    EXPECT_EQ(*InSequenceRewrite, *MergedRewrite);
+    if (*InSequenceRewrite != *MergedRewrite)
+      for (tooling::Replacement M : Merged)
+        llvm::errs() << M.getOffset() << " " << M.getLength() << " "
+                     << M.getReplacementText() << "\n";
+  }
+  void mergeAndTestRewrite(StringRef Code, const Replacements &First,
+                           const Replacements &Second) {
+    auto AfterFirst = applyAllReplacements(Code, First);
+    EXPECT_TRUE(static_cast<bool>(AfterFirst));
+    auto InSequenceRewrite = applyAllReplacements(*AfterFirst, Second);
+    tooling::Replacements Merged = mergeReplacements(First, Second);
+    auto MergedRewrite = applyAllReplacements(Code, Merged);
+    EXPECT_TRUE(static_cast<bool>(MergedRewrite));
+    EXPECT_EQ(*InSequenceRewrite, *MergedRewrite);
+    if (*InSequenceRewrite != *MergedRewrite)
+      for (tooling::Replacement M : Merged)
+        llvm::errs() << M.getOffset() << " " << M.getLength() << " "
+                     << M.getReplacementText() << "\n";
+  }
+};
+
+TEST_F(MergeReplacementsTest, Offsets) {
+  mergeAndTestRewrite("aaa", "aabab", "cacabab",
+                      {{"", 2, 0, "b"}, {"", 3, 0, "b"}},
+                      {{"", 0, 0, "c"}, {"", 1, 0, "c"}});
+  mergeAndTestRewrite("aaa", "babaa", "babacac",
+                      {{"", 0, 0, "b"}, {"", 1, 0, "b"}},
+                      {{"", 4, 0, "c"}, {"", 5, 0, "c"}});
+  mergeAndTestRewrite("aaaa", "aaa", "aac", {{"", 1, 1, ""}},
+                      {{"", 2, 1, "c"}});
+
+  mergeAndTestRewrite("aa", "bbabba", "bbabcba",
+                      {{"", 0, 0, "bb"}, {"", 1, 0, "bb"}}, {{"", 4, 0, "c"}});
+}
+
+TEST_F(MergeReplacementsTest, Concatenations) {
+  // Basic concatenations. It is important to merge these into a single
+  // replacement to ensure the correct order.
+  EXPECT_EQ((Replacements{{"", 0, 0, "ab"}}),
+            mergeReplacements({{"", 0, 0, "a"}}, {{"", 1, 0, "b"}}));
+  EXPECT_EQ((Replacements{{"", 0, 0, "ba"}}),
+            mergeReplacements({{"", 0, 0, "a"}}, {{"", 0, 0, "b"}}));
+  mergeAndTestRewrite("", "a", "ab", {{"", 0, 0, "a"}}, {{"", 1, 0, "b"}});
+  mergeAndTestRewrite("", "a", "ba", {{"", 0, 0, "a"}}, {{"", 0, 0, "b"}});
+}
+
+TEST_F(MergeReplacementsTest, NotChangingLengths) {
+  mergeAndTestRewrite("aaaa", "abba", "acca", {{"", 1, 2, "bb"}},
+                      {{"", 1, 2, "cc"}});
+  mergeAndTestRewrite("aaaa", "abba", "abcc", {{"", 1, 2, "bb"}},
+                      {{"", 2, 2, "cc"}});
+  mergeAndTestRewrite("aaaa", "abba", "ccba", {{"", 1, 2, "bb"}},
+                      {{"", 0, 2, "cc"}});
+  mergeAndTestRewrite("aaaaaa", "abbdda", "abccda",
+                      {{"", 1, 2, "bb"}, {"", 3, 2, "dd"}}, {{"", 2, 2, "cc"}});
+}
+
+TEST_F(MergeReplacementsTest, OverlappingRanges) {
+  mergeAndTestRewrite("aaa", "bbd", "bcbcd",
+                      {{"", 0, 1, "bb"}, {"", 1, 2, "d"}},
+                      {{"", 1, 0, "c"}, {"", 2, 0, "c"}});
+
+  mergeAndTestRewrite("aaaa", "aabbaa", "acccca", {{"", 2, 0, "bb"}},
+                      {{"", 1, 4, "cccc"}});
+  mergeAndTestRewrite("aaaa", "aababa", "acccca",
+                      {{"", 2, 0, "b"}, {"", 3, 0, "b"}}, {{"", 1, 4, "cccc"}});
+  mergeAndTestRewrite("aaaaaa", "abbbba", "abba", {{"", 1, 4, "bbbb"}},
+                      {{"", 2, 2, ""}});
+  mergeAndTestRewrite("aaaa", "aa", "cc", {{"", 1, 1, ""}, {"", 2, 1, ""}},
+                      {{"", 0, 2, "cc"}});
+  mergeAndTestRewrite("aa", "abbba", "abcbcba", {{"", 1, 0, "bbb"}},
+                      {{"", 2, 0, "c"}, {"", 3, 0, "c"}});
+
+  mergeAndTestRewrite("aaa", "abbab", "ccdd",
+                      {{"", 0, 1, ""}, {"", 2, 0, "bb"}, {"", 3, 0, "b"}},
+                      {{"", 0, 2, "cc"}, {"", 2, 3, "dd"}});
+  mergeAndTestRewrite("aa", "babbab", "ccdd",
+                      {{"", 0, 0, "b"}, {"", 1, 0, "bb"}, {"", 2, 0, "b"}},
+                      {{"", 0, 3, "cc"}, {"", 3, 3, "dd"}});
 }
 
 } // end namespace tooling

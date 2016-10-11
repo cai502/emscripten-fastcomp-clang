@@ -27,6 +27,7 @@ template <class T, unsigned n> class SmallSetVector;
 namespace clang {
 
 class CXXConstructorDecl;
+class CXXDeleteExpr;
 class CXXRecordDecl;
 class DeclaratorDecl;
 class LookupResult;
@@ -69,6 +70,10 @@ public:
   /// selector.
   virtual void ReadMethodPool(Selector Sel);
 
+  /// Load the contents of the global method pool for a given
+  /// selector if necessary.
+  virtual void updateOutOfDateSelector(Selector Sel);
+
   /// \brief Load the set of namespaces that are known to the external source,
   /// which will be used during typo correction.
   virtual void ReadKnownNamespaces(
@@ -76,8 +81,11 @@ public:
 
   /// \brief Load the set of used but not defined functions or variables with
   /// internal linkage, or used but not defined internal functions.
-  virtual void ReadUndefinedButUsed(
-                         llvm::DenseMap<NamedDecl*, SourceLocation> &Undefined);
+  virtual void
+  ReadUndefinedButUsed(llvm::MapVector<NamedDecl *, SourceLocation> &Undefined);
+
+  virtual void ReadMismatchingDeleteExpressions(llvm::MapVector<
+      FieldDecl *, llvm::SmallVector<std::pair<SourceLocation, bool>, 4>> &);
 
   /// \brief Do last resort, unqualified lookup on a LookupResult that
   /// Sema cannot find.
@@ -135,7 +143,7 @@ public:
   /// be invoked multiple times; the external source should take care not to
   /// introduce the same declarations repeatedly.
   virtual void ReadUnusedLocalTypedefNameCandidates(
-      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) {};
+      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) {}
 
   /// \brief Read the set of referenced selectors known to the
   /// external Sema source.

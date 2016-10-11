@@ -15,6 +15,7 @@
 
 #include "clang-c/Index.h"
 #include "clang/AST/CanonicalType.h"
+#include "clang/AST/DeclBase.h"
 #include "clang/AST/Type.h"
 #include "clang/Sema/CodeCompleteOptions.h"
 #include "llvm/ADT/DenseMap.h"
@@ -22,6 +23,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Allocator.h"
 #include <string>
+#include <utility>
 
 namespace clang {
 
@@ -516,8 +518,8 @@ class CodeCompletionTUInfo {
 
 public:
   explicit CodeCompletionTUInfo(
-                    IntrusiveRefCntPtr<GlobalCodeCompletionAllocator> Allocator)
-    : AllocatorRef(Allocator) { }
+      IntrusiveRefCntPtr<GlobalCodeCompletionAllocator> Allocator)
+      : AllocatorRef(std::move(Allocator)) {}
 
   IntrusiveRefCntPtr<GlobalCodeCompletionAllocator> getAllocatorRef() const {
     return AllocatorRef;
@@ -765,11 +767,13 @@ public:
   /// \param Allocator The allocator that will be used to allocate the
   /// string itself.
   CodeCompletionString *CreateCodeCompletionString(Sema &S,
+                                         const CodeCompletionContext &CCContext,
                                            CodeCompletionAllocator &Allocator,
                                            CodeCompletionTUInfo &CCTUInfo,
                                            bool IncludeBriefComments);
   CodeCompletionString *CreateCodeCompletionString(ASTContext &Ctx,
                                                    Preprocessor &PP,
+                                         const CodeCompletionContext &CCContext,
                                            CodeCompletionAllocator &Allocator,
                                            CodeCompletionTUInfo &CCTUInfo,
                                            bool IncludeBriefComments);

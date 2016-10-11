@@ -19,8 +19,11 @@
 #ifndef LLVM_CLANG_TOOLING_CORE_REPLACEMENT_H
 #define LLVM_CLANG_TOOLING_CORE_REPLACEMENT_H
 
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -55,6 +58,11 @@ public:
     return RHS.Offset >= Offset &&
            (RHS.Offset + RHS.Length) <= (Offset + Length);
   }
+
+  /// \brief Whether this range equals to \p RHS or not.
+  bool operator==(const Range &RHS) const {
+    return Offset == RHS.getOffset() && Length == RHS.getLength();
+  }
   /// @}
 
 private:
@@ -77,22 +85,24 @@ public:
   /// \param FilePath A source file accessible via a SourceManager.
   /// \param Offset The byte offset of the start of the range in the file.
   /// \param Length The length of the range in bytes.
-  Replacement(StringRef FilePath, unsigned Offset,
-              unsigned Length, StringRef ReplacementText);
+  Replacement(StringRef FilePath, unsigned Offset, unsigned Length,
+              StringRef ReplacementText);
 
   /// \brief Creates a Replacement of the range [Start, Start+Length) with
   /// ReplacementText.
-  Replacement(const SourceManager &Sources, SourceLocation Start, unsigned Length,
-              StringRef ReplacementText);
+  Replacement(const SourceManager &Sources, SourceLocation Start,
+              unsigned Length, StringRef ReplacementText);
 
   /// \brief Creates a Replacement of the given range with ReplacementText.
   Replacement(const SourceManager &Sources, const CharSourceRange &Range,
-              StringRef ReplacementText);
+              StringRef ReplacementText,
+              const LangOptions &LangOpts = LangOptions());
 
   /// \brief Creates a Replacement of the node with ReplacementText.
   template <typename Node>
   Replacement(const SourceManager &Sources, const Node &NodeToReplace,
-              StringRef ReplacementText);
+              StringRef ReplacementText,
+              const LangOptions &LangOpts = LangOptions());
 
   /// \brief Returns whether this replacement can be applied to a file.
   ///
@@ -114,11 +124,13 @@ public:
   std::string toString() const;
 
  private:
-  void setFromSourceLocation(const SourceManager &Sources, SourceLocation Start,
-                             unsigned Length, StringRef ReplacementText);
-  void setFromSourceRange(const SourceManager &Sources,
-                          const CharSourceRange &Range,
-                          StringRef ReplacementText);
+   void setFromSourceLocation(const SourceManager &Sources,
+                              SourceLocation Start, unsigned Length,
+                              StringRef ReplacementText);
+   void setFromSourceRange(const SourceManager &Sources,
+                           const CharSourceRange &Range,
+                           StringRef ReplacementText,
+                           const LangOptions &LangOpts);
 
   std::string FilePath;
   Range ReplacementRange;
@@ -154,9 +166,13 @@ bool applyAllReplacements(const std::vector<Replacement> &Replaces,
 
 /// \brief Applies all replacements in \p Replaces to \p Code.
 ///
-/// This completely ignores the path stored in each replacement. If one or more
-/// replacements cannot be applied, this returns an empty \c string.
-std::string applyAllReplacements(StringRef Code, const Replacements &Replaces);
+/// This completely ignores the path stored in each replacement. If all
+/// replacements are applied successfully, this returns the code with
+/// replacements applied; otherwise, an llvm::Error carrying llvm::StringError
+/// is returned (the Error message can be converted to string using
+/// `llvm::toString()` and 'std::error_code` in the `Error` should be ignored).
+llvm::Expected<std::string> applyAllReplacements(StringRef Code,
+                                                 const Replacements &Replaces);
 
 /// \brief Calculates how a code \p Position is shifted when \p Replaces are
 /// applied.
@@ -192,35 +208,44 @@ struct TranslationUnitReplacements {
   std::vector<Replacement> Replacements;
 };
 
-/// \brief Apply all replacements in \p Replaces to the Rewriter \p Rewrite.
+/// \brief Calculates the ranges in a single file that are affected by the
+/// Replacements. Overlapping ranges will be merged.
 ///
-/// Replacement applications happen independently of the success of
-/// other applications.
+/// \pre Replacements must be for the same file.
 ///
-/// \returns true if all replacements apply. false otherwise.
-bool applyAllReplacements(const Replacements &Replaces, Rewriter &Rewrite);
+/// \returns a non-overlapping and sorted ranges.
+std::vector<Range> calculateChangedRanges(const Replacements &Replaces);
 
-/// \brief Apply all replacements in \p Replaces to the Rewriter \p Rewrite.
+/// \brief Calculates the new ranges after \p Replaces are applied. These
+/// include both the original \p Ranges and the affected ranges of \p Replaces
+/// in the new code.
 ///
-/// Replacement applications happen independently of the success of
-/// other applications.
+/// \pre Replacements must be for the same file.
 ///
-/// \returns true if all replacements apply. false otherwise.
-bool applyAllReplacements(const std::vector<Replacement> &Replaces,
-                          Rewriter &Rewrite);
+/// \return The new ranges after \p Replaces are applied. The new ranges will be
+/// sorted and non-overlapping.
+std::vector<Range>
+calculateRangesAfterReplacements(const Replacements &Replaces,
+                                 const std::vector<Range> &Ranges);
 
-/// \brief Applies all replacements in \p Replaces to \p Code.
-///
-/// This completely ignores the path stored in each replacement. If one or more
-/// replacements cannot be applied, this returns an empty \c string.
-std::string applyAllReplacements(StringRef Code, const Replacements &Replaces);
+/// \brief Groups a random set of replacements by file path. Replacements
+/// related to the same file entry are put into the same vector.
+std::map<std::string, Replacements>
+groupReplacementsByFile(const Replacements &Replaces);
+
+/// \brief Merges two sets of replacements with the second set referring to the
+/// code after applying the first set. Within both 'First' and 'Second',
+/// replacements must not overlap.
+Replacements mergeReplacements(const Replacements &First,
+                               const Replacements &Second);
 
 template <typename Node>
 Replacement::Replacement(const SourceManager &Sources,
-                         const Node &NodeToReplace, StringRef ReplacementText) {
+                         const Node &NodeToReplace, StringRef ReplacementText,
+                         const LangOptions &LangOpts) {
   const CharSourceRange Range =
       CharSourceRange::getTokenRange(NodeToReplace->getSourceRange());
-  setFromSourceRange(Sources, Range, ReplacementText);
+  setFromSourceRange(Sources, Range, ReplacementText, LangOpts);
 }
 
 } // end namespace tooling
