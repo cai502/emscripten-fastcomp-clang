@@ -340,6 +340,7 @@ protected:
     if (Opts.CPlusPlus)
       Builder.defineMacro("_GNU_SOURCE");
 
+    Builder.defineMacro("A2O_EMSCRIPTEN");
     // Emscripten's software environment and the asm.js runtime aren't really
     // Unix per se, but they're perhaps more Unix-like than what software
     // expects when "unix" is *not* defined.
